@@ -1,0 +1,16 @@
+[package]
+name = "saito"
+version = "0.1.0"
+authors = ["BearGuy <stephen@peterkins.ca>"]
+edition = "2018"
+
+[dependencies]
+sha2 = "0.8"
+digest = '0.8'
+rand = "0.4"
+secp256k1 = '0.12.2'
+bitcoin = "0.17.1"
+serde = '1.0'
+base58 = '0.1.0'
+merkle = '1.10.0'
+ring = "^0.13.0"
