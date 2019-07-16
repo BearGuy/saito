@@ -7,7 +7,7 @@ extern crate merkle;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{thread, time};
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 
 use std::mem::transmute;
 
@@ -26,6 +26,8 @@ use merkle::{MerkleTree, Hashable};
 use rand::{Rng,thread_rng};
 
 use base58::{ToBase58};
+
+static GENESIS_PERIOD: i32 = 21600;
 
 fn time_since_unix_epoch() -> u128 {
     let start = SystemTime::now();
@@ -47,15 +49,6 @@ fn create_merkle_root(transactions: Vec<Transaction>) -> Vec<u8> {
     return merkle_root;
 }
 
-//fn sha256_hash(inputs: Vec<Vec<u8>>) {
-//    let mut hasher = Sha256::new();
-//
-//    hasher.input(id_bytes);
-//    hasher.input(self.previous_hash.as_slice());
-//    hasher.input(timestamp_bytes);
-//
-//    return hasher.result();
-//}
 
 #[derive(Debug)]
 struct Miner {
@@ -271,19 +264,6 @@ impl Clone for Transaction {
 // finish Hashable for Transaction
 impl Hashable for Transaction {
     fn update_context(&self, context: &mut Context) {
-        //let id_bytes: [u8; 4] = unsafe { transmute(self.id.to_be()) };
-        //let timestamp_bytes: [u8; 16] = unsafe { transmute(self.timestamp.to_be()) };
-
-        //context.update(&id_bytes);
-        //context.update(&timestamp_bytes);
-
-        //for elem in self.to.iter() {
-        //    context.update(&elem.return_index());
-        //}
-        //
-        //for elem in self.from.iter() {
-        //    context.update(&elem.return_index());
-        //}
         context.update(&self.return_index());
     }
 }
@@ -366,6 +346,15 @@ impl Wallet {
             }
         }
     }
+
+    fn return_balance(&self) -> f32 {
+        let mut balance: f32 = 0.0; 
+        for (_, slip) in self.inputs.clone() {
+            balance += slip.amount;
+        }
+
+        return balance;
+    }
 }
 
 #[derive(Debug)]
@@ -375,7 +364,12 @@ struct Block {
     merkle_root: Vec<u8>,
     timestamp: u128,
     creator: PublicKey,
-    transactions: Vec<Transaction>
+    transactions: Vec<Transaction>,
+    difficulty: f32,
+    paysplit: f32,
+    treasury: f32, 
+    coinbase: f32,
+    reclaimed: f32
 }
 
 impl Block {
@@ -394,22 +388,43 @@ impl Block {
         return block_hash.to_vec()
     }
 
-    pub fn bundle(&mut self, mut transactions: Vec<Transaction>, last_tx_id: u32, last_slip_id: u32) {
+    pub fn bundle(&mut self, blocks: &RefMut<Vec<Block>>, transactions: Vec<Transaction>, last_tx_id: u32, last_slip_id: u32) {
+        match blocks.last() {
+           Some(previous_block) => {
+               self.bundle_with_previous_block(previous_block);
+               self.bundle_transactions(transactions, last_tx_id, last_slip_id);
+           },
+           None => {
+               self.bundle_transactions(transactions, last_tx_id, last_slip_id);
+           }
+        } 
+
+    }
+
+    fn bundle_with_previous_block(&mut self, previous_block: &Block) {
+         self.id = previous_block.id + 1;
+         self.treasury = previous_block.treasury + previous_block.reclaimed;
+         self.coinbase = self.treasury / GENESIS_PERIOD as f32; // hard code this
+         self.treasury = self.treasury - self.coinbase;
+         self.previous_hash = previous_block.return_block_hash();
+         self.paysplit = previous_block.paysplit; 
+         self.difficulty = previous_block.difficulty;
+    }
+
+    fn bundle_transactions(&mut self, mut transactions: Vec<Transaction>, last_tx_id: u32, last_slip_id: u32) {
         let mut min_slip_id: u32 = last_slip_id; 
         let mut min_tx_id: u32 = last_tx_id; 
 
         for tx in transactions.iter_mut() {
-            for i in 0..tx.to.len() {
-                tx.to[i].id = min_slip_id;
-                tx.to[i].block_id = self.id;
-                tx.to[i].transaction_id = min_tx_id;
-                min_slip_id = min_slip_id + 1;
-            }
-
             for j in 0..tx.from.len() {
                 tx.from[j].id = last_slip_id;
                 tx.from[j].block_id = self.id;
                 tx.from[j].transaction_id = min_tx_id;
+                min_slip_id = min_slip_id + 1;
+            }
+            
+            for i in 0..tx.to.len() {
+                tx.to[i].id = min_slip_id;
                 min_slip_id = min_slip_id + 1;
             }
 
@@ -419,22 +434,6 @@ impl Block {
             //println!("{:?}", tx);
             self.transactions.push(tx.clone());
         }
-
-       // self.transactions.extend(transactions.iter().map(|tx| {
-       //     for i in 0..tx.to.len() {
-       //         tx.to[i].id = last_slip_id;
-       //         last_slip_id = last_slip_id + 1;
-       //     }
-
-       //     for j in 0..tx.from.len() {
-       //         tx.from[j].id = last_slip_id;
-       //         last_slip_id = last_slip_id + 1;
-       //     }
-
-       //     tx.id = last_tx_id;
-       //     last_tx_id += 1;
-       //     return &tx;
-       // }));
     }
 
     fn return_slip_len(&self) -> u32 {
@@ -495,10 +494,6 @@ struct BurnFee {
 
 impl BurnFee {
     fn calculate(&self) -> f32 {
-
-        //println!("{}", &self.last_block_timestamp);
-        //println!("{}", time_since_unix_epoch);
-
         let mut elapsed_time = time_since_unix_epoch()  - self.last_block_timestamp;
 
         // return 0.0 if it's been twice as long as 10s 
@@ -576,25 +571,31 @@ fn main() {
             }
 
             let mut block = Block { 
-                id: blockchain.last_block_id + 1,
+                id: 1,
                 timestamp: time_since_unix_epoch(),
                 previous_hash,
                 merkle_root: Vec::new(),
                 creator: wallet.publickey,
-                transactions: Vec::new()
+                transactions: Vec::new(),
+                difficulty: 0.0,
+                paysplit: 0.5,
+                treasury: 2868100000.0,  
+                coinbase: 0.0,
+                reclaimed: 0.0
             };
 
             // transfer all of the transactions of the mempool into our block
             // bundle block
             // block.transactions = mempool.borrow_mut().transactions.borrow_mut().clone();
             block.bundle(
+                &blockchain.blocks.borrow_mut(), 
                 mempool.borrow_mut().transactions.borrow_mut().clone(),
                 blockchain.last_tx_id,
                 blockchain.last_slip_id, 
             );
 
-            let last_tx_id: u32 = block.return_tx_len();
-            let last_slip_id: u32 = block.return_slip_len();
+            let last_tx_id: u32 = blockchain.last_tx_id + block.return_tx_len();
+            let last_slip_id: u32 = blockchain.last_slip_id + block.return_slip_len();
 
             // clear the mempool afterwards
             mempool.borrow_mut().transactions = RefCell::new(Vec::new());
@@ -610,9 +611,11 @@ fn main() {
             println!("{:?}", block);
 
             wallet.process_payment(block.transactions.clone());
+            println!("CURRENT BALANCE: {}", wallet.return_balance());
 
             blockchain.blocks.borrow_mut().push(block);
  
+            // Possibly add these to block? 
             blockchain.increment_block_id();
             blockchain.update_tx_id(last_tx_id);
             blockchain.update_slip_id(last_slip_id);
