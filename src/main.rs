@@ -54,23 +54,25 @@ fn create_merkle_root(transactions: Vec<Transaction>) -> Vec<u8> {
 struct Miner {
     is_mining: bool,
     can_i_mine: bool,
+    difficulty: f32,
+    paysplit: f32,
 }
 
 impl Miner {
     //fn start_mining(&mut self, mut mempool: Mempool, wallet: &Wallet, prev_blk: &Block) {
-    fn start_mining(&mut self, mempool: &RefCell<Mempool>, wallet: &Wallet, prev_blk: &Vec<u8>) {
+    fn start_mining(&mut self, mempool: &RefCell<Mempool>, wallet: &Wallet, previous_block_hash: Vec<u8>) {
         self.can_i_mine = true; 
         self.is_mining = true;
 
-        let golden_ticket = GoldenTicket {
-            target: String::from("TARGET"),
-            vote: String::from("VOTE"),
-            random: String::from("RANDOM"),
-            publickey: wallet.publickey,
-        };
+//        let golden_ticket = GoldenTicket {
+//            target: previous_block_hash.clone(),
+//            vote: 1,
+//            random: String::from("RANDOM"),
+//            publickey: wallet.publickey,
+//        };
         
         while self.can_i_mine {
-            self.attempt_solution(mempool, &golden_ticket, prev_blk);
+            self.attempt_solution(mempool, wallet, &previous_block_hash);
         };
     }
 
@@ -78,30 +80,32 @@ impl Miner {
         self.can_i_mine = false;
     }
 
-    fn attempt_solution(&mut self, mempool: &RefCell<Mempool>, golden_ticket: &GoldenTicket, prev_blk: &Vec<u8>) {
+    fn attempt_solution(&mut self, mempool: &RefCell<Mempool>, wallet: &Wallet, prev_blk: &Vec<u8>) {
         //if prev_blk.id == 1 { return; } 
         
         let mut rng = thread_rng(); 
         let random_number = rng.gen::<u32>();
-
         let random_number_bytes: [u8; 4] = unsafe { transmute(random_number.to_be()) };
         
         // hash our solution
         let mut hasher = Sha256::new();
-        let publickey_vec: Vec<u8> = golden_ticket.publickey.serialize().iter().cloned().collect();
+        let publickey_vec: Vec<u8> = wallet.publickey.serialize().iter().cloned().collect();
         hasher.input(publickey_vec);
         hasher.input(random_number_bytes);
 
-        //let random_solution = hasher.result().as_slice();
+//        let random_solution = hasher.result().as_slice().clone();
+        let random_solution_vec = hasher.result().to_vec();
 
-        if self.is_valid_solution(hasher.result().as_slice(), prev_blk) {
+        if self.is_valid_solution(&random_solution_vec, prev_blk) {
             // Stop mining
+            //hasher.result().as_slice()
             println!("WE HAVE FOUND A SOLUTION");
             self.can_i_mine = false;
 
+            let golden_tx_solution = self.calculate_solution(wallet.publickey, prev_blk, &random_solution_vec);
+
             // Find winning node
             // let winning_tx_id = self.find_winner();
-
             
             // Calculate amount won
             // static amount
@@ -117,7 +121,7 @@ impl Miner {
             };
             
             golden_tx.add_to_slip(Slip {
-                address: golden_ticket.publickey,
+                address: wallet.publickey,
                 amount: node_amount,
                 block_id: 0,
                 transaction_id: 0,
@@ -127,7 +131,7 @@ impl Miner {
             });
 
             golden_tx.add_to_slip(Slip {
-                address: golden_ticket.publickey,
+                address: wallet.publickey,
                 amount: miner_amount,
                 block_id: 0,
                 transaction_id: 0,
@@ -137,7 +141,7 @@ impl Miner {
             });
             
             golden_tx.add_from_slip(Slip {
-                address: golden_ticket.publickey,
+                address: wallet.publickey,
                 amount: 0.0,
                 block_id: 0,
                 transaction_id: 0,
@@ -151,7 +155,20 @@ impl Miner {
         }
     }
 
-    fn is_valid_solution(&self, random_solution: &[u8], prev_blk: &Vec<u8>) -> bool {
+    fn calculate_solution(&self, publickey: PublicKey, block_hash: &Vec<u8>, random: &Vec<u8>) -> GoldenTicket {
+        let mut vote: u8 = 0;
+//        if block.difficulty > self.difficulty {
+//            vote = 1;
+//        } 
+        return GoldenTicket {
+            target: block_hash.clone(),
+            vote: 1,
+            random: random.clone(),
+            publickey,
+        } 
+    }
+
+    fn is_valid_solution(&self, random_solution: &Vec<u8>, prev_blk: &Vec<u8>) -> bool {
         // static difficulty until this is implemented on the block object 
         let difficulty = 2;
 
@@ -189,10 +206,26 @@ impl Mempool {
 
 #[derive(Debug)]
 struct GoldenTicket {
-    target: String,
-    vote: String,
-    random: String,
+    target: Vec<u8>,
+    vote: u8,
+    random: Vec<u8>,
     publickey: PublicKey
+}
+
+impl GoldenTicket {
+    fn calculate_difficulty (&self, previous_block: &Block) -> f32 {
+        return match self.vote {
+            1 => previous_block.difficulty + 0.01,
+            _ => previous_block.difficulty - 0.01
+        }
+    }
+
+    fn calculate_paysplit (&self, previous_block: &Block) -> f32 {
+        return match self.vote {
+            1 => previous_block.paysplit + 0.01,
+            _ => previous_block.paysplit - 0.01
+        }
+    }
 }
 
 // 0 = normal
@@ -393,6 +426,7 @@ impl Block {
            Some(previous_block) => {
                self.bundle_with_previous_block(previous_block);
                self.bundle_transactions(transactions, last_tx_id, last_slip_id);
+//               self.calculate_difficulty()
            },
            None => {
                self.bundle_transactions(transactions, last_tx_id, last_slip_id);
@@ -435,6 +469,20 @@ impl Block {
             self.transactions.push(tx.clone());
         }
     }
+
+//    fn calculate_difficulty(&mut self) {
+//        for tx in self.transactions.iter() {
+//            if tx.tx_type == TransactionType::GoldenTicket {
+//                match tx.ty_type {
+//                    TransactionType::GoldenTicket => {
+//                        self.difficulty = tx.calculate_difficulty(previous_block);
+//                        self.paysplit = tx.calculate_paysplit(previous_block);
+//                    }
+//                    _ => {}
+//                }
+//            }
+//        } 
+//    }
 
     fn return_slip_len(&self) -> u32 {
         let mut slip_number: u32 = 0;
@@ -551,7 +599,9 @@ fn main() {
 
     let mut miner = Miner {
         is_mining: false,
-        can_i_mine: false
+        can_i_mine: false,
+        difficulty: 2.0,
+        paysplit: 0.5,
     };
     
     let public_key_base_58 = wallet.return_base58();
@@ -624,7 +674,7 @@ fn main() {
 
 
             // need to borrow block and implement it
-            miner.start_mining(&mempool, &wallet, &blockchain.return_previous_hash());
+            miner.start_mining(&mempool, &wallet, blockchain.return_previous_hash());
 
             println!("STARTING MINING ON NEW BLOCK");
 
