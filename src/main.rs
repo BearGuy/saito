@@ -3,6 +3,7 @@ extern crate rand;
 extern crate base58;
 extern crate secp256k1;
 extern crate merkle;
+//extern crate byteorder;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{thread, time};
@@ -26,8 +27,10 @@ use merkle::{MerkleTree, Hashable};
 use rand::{Rng,thread_rng};
 
 use base58::{ToBase58};
+//use byteorder::{BigEndian, ReadBytesExt};
 
 static GENESIS_PERIOD: i32 = 21600;
+static BLANK_32_SLICE: [u8; 72] = [0; 72];
 
 fn time_since_unix_epoch() -> u128 {
     let start = SystemTime::now();
@@ -60,28 +63,29 @@ struct Miner {
 
 impl Miner {
     //fn start_mining(&mut self, mut mempool: Mempool, wallet: &Wallet, prev_blk: &Block) {
-    fn start_mining(&mut self, mempool: &RefCell<Mempool>, wallet: &Wallet, previous_block_hash: Vec<u8>) {
+    fn start_mining(&mut self,
+                    mempool: &RefCell<Mempool>,
+                    previous_block: &Block,
+                    wallet: &Wallet,
+                    burnfee: &BurnFee) {
         self.can_i_mine = true; 
         self.is_mining = true;
-
-//        let golden_ticket = GoldenTicket {
-//            target: previous_block_hash.clone(),
-//            vote: 1,
-//            random: String::from("RANDOM"),
-//            publickey: wallet.publickey,
-//        };
         
         while self.can_i_mine {
-            self.attempt_solution(mempool, wallet, &previous_block_hash);
+            self.attempt_solution(mempool, previous_block, wallet, burnfee);
         };
     }
 
     fn stop_mining(&mut self) {
         self.can_i_mine = false;
     }
-
-    fn attempt_solution(&mut self, mempool: &RefCell<Mempool>, wallet: &Wallet, prev_blk: &Vec<u8>) {
-        //if prev_blk.id == 1 { return; } 
+    
+    // need previous_block, previous_block: &Block
+    fn attempt_solution(&mut self,
+                        mempool: &RefCell<Mempool>,
+                        previous_block: &Block,
+                        wallet: &Wallet,
+                        burnfee: &BurnFee) {
         
         let mut rng = thread_rng(); 
         let random_number = rng.gen::<u32>();
@@ -92,37 +96,51 @@ impl Miner {
         let publickey_vec: Vec<u8> = wallet.publickey.serialize().iter().cloned().collect();
         hasher.input(publickey_vec);
         hasher.input(random_number_bytes);
-
-//        let random_solution = hasher.result().as_slice().clone();
+    
+        let result = hasher.clone().result();
+        let random_solution_slice = result.as_slice();
         let random_solution_vec = hasher.result().to_vec();
 
-        if self.is_valid_solution(&random_solution_vec, prev_blk) {
+        if self.is_valid_solution(&random_solution_vec, &previous_block.return_block_hash()) {
             // Stop mining
             //hasher.result().as_slice()
             println!("WE HAVE FOUND A SOLUTION");
             self.can_i_mine = false;
 
-            let golden_tx_solution = self.calculate_solution(wallet.publickey, prev_blk, &random_solution_vec);
+            let golden_tx_solution = self.calculate_solution(
+                wallet.publickey,
+                &previous_block.return_block_hash(),
+                &random_solution_vec
+            );
 
             // Find winning node
-            // let winning_tx_id = self.find_winner();
-            
-            // Calculate amount won
-            // static amount
-            let node_amount = 1000.0;
-            let miner_amount = 1000.0;
+            let winning_tx_address = self.find_winner(&random_solution_slice, &previous_block);
 
-            let mut golden_tx = Transaction {
-                id: 0,
-                timestamp: time_since_unix_epoch(), 
-                tx_type: TransactionType::GoldenTicket,
-                to: Vec::new(),
-                from: Vec::new(),
-            };
+            // we need to calculate the fees that are gonna go in the slips here
+            let paid_burn_fee = burnfee.return_previous_burnfee();
+
+            // This is just inputs - outputs for all transactions in the block
+            let total_fees_for_creator = previous_block.return_available_fees(&previous_block.creator);
+
+            // get the fees available from our publickey 
+            let total_fees_in_block = previous_block.return_available_fees(&wallet.publickey);
+
+            // calculate the amount the creator can take for themselves 
+            let creator_surplus = total_fees_for_creator - paid_burn_fee;
+
+            // find the amount that will be divied out to miners and nodes
+            let total_fees_for_miners_and_nodes = (total_fees_in_block - creator_surplus) + previous_block.coinbase;
+
+            // Calculate Shares
+            let miner_share = total_fees_for_miners_and_nodes * self.paysplit;
+            let node_share  = total_fees_for_miners_and_nodes - miner_share;
+            
+            println!("CREAINTG GOLDEN TX");
+            let mut golden_tx = Transaction::new(TransactionType::GoldenTicket);
             
             golden_tx.add_to_slip(Slip {
                 address: wallet.publickey,
-                amount: node_amount,
+                amount: miner_share,
                 block_id: 0,
                 transaction_id: 0,
                 id: 0,
@@ -131,8 +149,8 @@ impl Miner {
             });
 
             golden_tx.add_to_slip(Slip {
-                address: wallet.publickey,
-                amount: miner_amount,
+                address: winning_tx_address,
+                amount: node_share,
                 block_id: 0,
                 transaction_id: 0,
                 id: 0,
@@ -150,6 +168,9 @@ impl Miner {
                 lc: 1 
             });
 
+            // sign TX
+            println!("CREATING SIGNATURE");
+            golden_tx.sig = wallet.create_signature(golden_tx.return_signature_source().as_slice());
 
             mempool.borrow_mut().add_transaction(golden_tx);
         }
@@ -169,8 +190,9 @@ impl Miner {
     }
 
     fn is_valid_solution(&self, random_solution: &Vec<u8>, prev_blk: &Vec<u8>) -> bool {
-        // static difficulty until this is implemented on the block object 
-        let difficulty = 2;
+        
+        // static difficulty until this is implemented on the block object
+        let difficulty = self.difficulty.round() as usize;
 
         let random_solution_slice = &random_solution[0..difficulty];
         let previous_hash_slice = &prev_blk[0..difficulty];
@@ -185,9 +207,56 @@ impl Miner {
         }
     }
 
-    fn find_winner(&self) -> u32 {
+    fn find_winner(&self, random_solution: &[u8], previous_block: &Block) -> PublicKey {
        // let max_hash = 0xFFFFFFFF;
-       return 0
+       
+       let winning_address: PublicKey;
+       if previous_block.transactions.len() == 0 { return previous_block.creator; }
+
+       //let random_slice = random_solution;
+       
+       //let max_num: u32 = u32::from_str_radix("ffffffffffff", 16).unwrap();
+       //let win_num: u32 = unsafe { transmute(random_solution.to_be()) };
+       //let win_num = random_solution.clone().read_u32::<BigEndian>().unwrap(); //(random_solution);
+
+       //let winner_dec = win_num as f32 / max_num as f32;
+
+       let mut winning_tx = self.find_winning_transaction(previous_block);
+
+       // until we differentiate between fees and amount, we'll just use amount
+       
+       winning_address = match winning_tx {
+          Some(tx) => tx.from[0].address,
+          None => previous_block.creator
+       };
+
+       return winning_address;
+        
+       //return winning_tx.from[0].address;
+    }
+
+    fn find_winning_transaction(&self, previous_block: &Block) -> Option<Transaction> {
+        let mut winning_tx = Transaction::new(TransactionType::Base);
+        //{
+        //    id: 1,
+        //    from: Vec::new(),
+        //    to: Vec::new(),
+        //    tx_type: TransactionType::Base,
+        //    timestamp: 0
+        //};        
+        let mut winning_amt = 0.0;
+        for tx in previous_block.transactions.iter() {
+            let current_amt = tx.calculate_from_amount();             
+            if winning_amt < current_amt {
+               winning_tx = tx.clone();
+               winning_amt = current_amt;
+           }  
+        }
+        if winning_amt == 0.0 {
+            return None
+        } else {
+            return Some(winning_tx.clone());
+        }
     }
 }
 
@@ -250,11 +319,23 @@ struct Transaction {
     id: u32, 
     tx_type: TransactionType,
     timestamp: u128,
+    sig: Signature,
     to: Vec<Slip>,
     from: Vec<Slip>
 }
 
 impl Transaction {
+    pub fn new(tx_type: TransactionType) -> Transaction {
+        return Transaction {
+            id: 0,
+            timestamp: time_since_unix_epoch(),
+            tx_type,
+            sig: Signature::from_compact(&[0; 64]).unwrap(),
+            to: Vec::new(),
+            from: Vec::new(),
+        };
+    } 
+    
     fn add_to_slip(&mut self, slip: Slip) {
         self.to.push(slip); 
     }
@@ -263,22 +344,57 @@ impl Transaction {
         self.from.push(slip)
     }
 
-    pub fn return_index(&self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::new();
-        let id_bytes: [u8; 4] = unsafe { transmute(self.id.to_be()) };
+    fn calculate_from_amount(&self) -> f32 {
+        let mut total_amount: f32 = 0.0;
+        for slip in self.from.clone().into_iter() {
+           total_amount += slip.amount;  
+        }
+        return total_amount;
+    }
+
+    fn calculate_to_amount(&self) -> f32 {
+        let mut total_amount: f32 = 0.0;
+        for slip in self.to.clone().into_iter() {
+           total_amount += slip.amount;  
+        }
+        return total_amount;
+    }
+
+    fn return_fees_usable(&self, key: &PublicKey) -> f32 {
+        let mut input_fees: f32 = 0.0;
+        let mut output_fees: f32 = 0.0;
+
+        for slip in self.from.iter() {
+            if &slip.address == key {
+                input_fees += slip.amount;
+            }
+        }
+
+        for slip in self.to.iter() {
+            if &slip.address == key {
+                output_fees += slip.amount;
+            }
+        }
+
+        return input_fees - output_fees;
+    }
+
+
+    // duplicate minus id, evaluate
+    pub fn return_signature_source(&self) -> Vec<u8> {
+        let mut sig_source_bytes: Vec<u8> = Vec::new();
         let timestamp_bytes: [u8; 16] = unsafe { transmute(self.timestamp.to_be()) };
 
-        bytes.extend(&id_bytes);
-        bytes.extend(&timestamp_bytes);
+        sig_source_bytes.extend(&timestamp_bytes);
 
-        for elem in self.to.iter() {
-            bytes.extend(&elem.return_index());
+        for slip in self.from.iter() {
+            sig_source_bytes.extend(slip.return_index());
         }
         
-        for elem in self.from.iter() {
-            bytes.extend(&elem.return_index());
+        for slip in self.to.iter() {
+            sig_source_bytes.extend(slip.return_index());
         }
-        return bytes
+        return sig_source_bytes;
     }
 }
 
@@ -288,6 +404,7 @@ impl Clone for Transaction {
             id: self.id,
             tx_type: self.tx_type,
             timestamp: self.timestamp,
+            sig: self.sig,
             to: self.to.clone(),
             from: self.from.clone()
         }
@@ -297,7 +414,7 @@ impl Clone for Transaction {
 // finish Hashable for Transaction
 impl Hashable for Transaction {
     fn update_context(&self, context: &mut Context) {
-        context.update(&self.return_index());
+        context.update(&self.return_signature_source());
     }
 }
 
@@ -343,9 +460,12 @@ struct Wallet {
 }
 
 impl Wallet {
-    fn create_signature(&self, msg: &[u8]) -> Signature {
+    fn create_signature(&self, data: &[u8]) -> Signature {
+        let mut hasher = Sha256::new();
+        hasher.input(data);
+
         let sign = Secp256k1::signing_only();
-        let msg = Message::from_slice(&msg).unwrap();
+        let msg = Message::from_slice(hasher.result().as_slice()).unwrap();
         return sign.sign(&msg, &self.privatekey)
     }
 
@@ -483,6 +603,16 @@ impl Block {
 //            }
 //        } 
 //    }
+//
+    fn return_available_fees(&self, key: &PublicKey) -> f32 {
+        let mut total_fees: f32 = 0.0;
+
+        for tx in self.transactions.iter() {
+            total_fees += tx.return_fees_usable(key);
+        }
+
+        return total_fees;
+    }
 
     fn return_slip_len(&self) -> u32 {
         let mut slip_number: u32 = 0;
@@ -538,11 +668,12 @@ struct BurnFee {
     fee: f32,
     heartbeat: u32,
     last_block_timestamp: u128,
+    last_block_delta: u128
 }
 
 impl BurnFee {
-    fn calculate(&self) -> f32 {
-        let mut elapsed_time = time_since_unix_epoch()  - self.last_block_timestamp;
+    fn calculate(&self, mut elapsed_time: u128) -> f32 {
+        //let mut elapsed_time = time_since_unix_epoch()  - self.last_block_timestamp;
 
         // return 0.0 if it's been twice as long as 10s 
         if (elapsed_time / 1000) > (self.heartbeat as u128 * 2) { return 0.0; }
@@ -553,8 +684,20 @@ impl BurnFee {
         return self.fee / (elapsed_time_float / 1000.0);
     }
 
+    fn return_current_burnfee(&self) -> f32 {
+        return self.calculate(time_since_unix_epoch() - self.last_block_timestamp);
+    }
+
+    fn return_previous_burnfee(&self) -> f32 {
+        return self.calculate(self.last_block_delta);
+    }
+
     fn set_timestamp(&mut self, new_block_timestamp: u128) {
         self.last_block_timestamp = new_block_timestamp;
+    }
+
+    fn set_last_block_delta(&mut self, new_block_timestamp: u128) {
+        self.last_block_delta = new_block_timestamp - self.last_block_timestamp;
     }
 
     fn adjust(&mut self, current_block_timestamp: u128) {
@@ -563,6 +706,7 @@ impl BurnFee {
 
         self.fee = self.fee * (numerator / denominator as f32);
     }
+
 }
 
 fn main() {
@@ -586,6 +730,7 @@ fn main() {
         fee: 10.0, 
         heartbeat: 10,
         last_block_timestamp: time_since_unix_epoch(),
+        last_block_delta: 0
     };
     
     let (secret_key, public_key) = generate_keys(); 
@@ -609,7 +754,7 @@ fn main() {
 
     loop {
         let num_tx_in_mempool = mempool.borrow_mut().transactions.borrow_mut().len(); 
-        if (burnfee.calculate() <= 0.0 && num_tx_in_mempool > 0) || blockchain.last_block_id == 0 {
+        if (burnfee.return_current_burnfee() <= 0.0 && num_tx_in_mempool > 0) || blockchain.last_block_id == 0 {
             miner.stop_mining(); 
             
             let mut previous_hash: Vec<u8> = Vec::new();
@@ -657,6 +802,7 @@ fn main() {
             
             burnfee.adjust(current_block_timestamp);
             burnfee.set_timestamp(current_block_timestamp);
+            burnfee.set_last_block_delta(current_block_timestamp);
             
             println!("{:?}", block);
 
@@ -674,7 +820,7 @@ fn main() {
 
 
             // need to borrow block and implement it
-            miner.start_mining(&mempool, &wallet, blockchain.return_previous_hash());
+            miner.start_mining(&mempool, &blockchain.blocks.borrow_mut().last().unwrap(), &wallet, &burnfee);
 
             println!("STARTING MINING ON NEW BLOCK");
 
@@ -682,7 +828,7 @@ fn main() {
         } else {
             let one_second = time::Duration::from_millis(1000); 
             thread::sleep(one_second);
-            println!("FEE -- {:.8}", burnfee.calculate());
+            println!("FEE -- {:.8}", burnfee.return_current_burnfee());
         }
     }
 
