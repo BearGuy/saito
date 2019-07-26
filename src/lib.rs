@@ -6,16 +6,16 @@ extern crate merkle;
 extern crate serde;
 
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{thread, time};
+//use std::{thread, time};
 use std::cell::{RefCell, RefMut};
 use std::mem::transmute;
 use std::collections::HashMap;
 
 use serde::{Serialize, Deserialize};
 use serde::ser::{Serializer, SerializeStruct};
-use serde::de::{self, Deserializer, Visitor, SeqAccess, MapAccess};
+//use serde::de::{self, Deserializer, Visitor, SeqAccess, MapAccess};
 
-use std::fmt;
+//use std::fmt;
 
 use sha2::Sha256;
 use digest::Digest;
@@ -154,7 +154,7 @@ impl Miner {
                 block_id: 0,
                 transaction_id: 0,
                 id: 0,
-                block_hash: [0; 32],
+                block_hash: Vec::new(),
                 lc: 1
             });
 
@@ -164,7 +164,7 @@ impl Miner {
                 block_id: 0,
                 transaction_id: 0,
                 id: 0,
-                block_hash: [0; 32],
+                block_hash: Vec::new(),
                 lc: 1
             });
 
@@ -174,7 +174,7 @@ impl Miner {
                 block_id: 0,
                 transaction_id: 0,
                 id: 0,
-                block_hash: [0; 32],
+                block_hash: Vec::new(),
                 lc: 1
             });
 
@@ -326,8 +326,7 @@ impl GoldenTicket {
 // 4 = VIP rebroadcast
 // 5 = floating coinbase / golden chunk
 
-#[derive(Deserialize, Debug, Copy, Clone)]
-#[serde(field_identifier, rename_all = "lowercase")]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Copy, Clone)]
 pub enum TransactionType {
   Base,
   GoldenTicket,
@@ -337,23 +336,7 @@ pub enum TransactionType {
   GoldenChunk,
 }
 
-impl Serialize for TransactionType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-       match *self {
-           TransactionType::Base => serializer.serialize_unit_variant("TransactionType", 0, "Base"),
-           TransactionType::GoldenTicket => serializer.serialize_unit_variant("TransactionType", 1, "GoldenTicket"),
-           TransactionType::Fee => serializer.serialize_unit_variant("TransactionType", 2, "Fee"),
-           TransactionType::Rebroadcast => serializer.serialize_unit_variant("TransactionType", 3, "Rebroadcast"),
-           TransactionType::VIP => serializer.serialize_unit_variant("TransactionType", 4, "VIP"),
-           TransactionType::GoldenChunk => serializer.serialize_unit_variant("TransactionType", 5, "GoldenChunk"),
-       }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct Transaction {
     id: u32,
     tx_type: TransactionType,
@@ -361,7 +344,9 @@ pub struct Transaction {
     sig: Signature,
     to: Vec<Slip>,
     from: Vec<Slip>,
-    pub msg: Vec<u8>
+
+    #[serde(with = "serde_bytes")]
+    pub msg: Vec<u8>,
 }
 
 impl Transaction {
@@ -453,121 +438,6 @@ impl Clone for Transaction {
     }
 }
 
-// serialize_bytes can be used in some places for optimization
-impl Serialize for Transaction {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer
-    {
-        let mut state = serializer.serialize_struct("Transaction", 5)?;
-        state.serialize_field("id", &self.id)?;
-        state.serialize_field("timestamp", &self.timestamp)?;
-        state.serialize_field("sig", &self.sig)?;
-        state.serialize_field("tx_type", &self.tx_type)?;
-        state.serialize_field("msg", &self.msg)?;
-
-        // these are gonna have to be done sequentially
-        // state.serialize_field("to", &self.id)?;
-        // state.serialize_field("from", &self.id)?;
-        return state.end();
-    }
-}
-
-impl<'de> Deserialize<'de> for Transaction {
-   fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(field_identifier, rename_all = "lowercase")]
-        enum Field {Id, Timestamp, Sig, Tx_type, Msg}
-
-        struct TransactionVisitor;
-
-        impl<'de> Visitor<'de> for TransactionVisitor {
-            type Value = Transaction;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("struct Transaction")
-            }
-
-            fn visit_seq<V>(self, mut seq: V) -> Result<Transaction, V::Error>
-            where
-                V: SeqAccess<'de>,
-            {
-                let id= seq.next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let timestamp = seq.next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let sig = seq.next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let tx_type = seq.next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
-                let msg = seq.next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
-                Ok(Transaction{id, timestamp, sig, tx_type, to: Vec::new(), from: Vec::new(), msg})
-            }
-
-            fn visit_map<V>(self, mut map: V) -> Result<Transaction, V::Error>
-            where
-                V: MapAccess<'de>,
-            {
-                let mut id = None;
-                let mut timestamp = None;
-                let mut sig = None;
-                let mut tx_type = None;
-                let mut msg = None;
-
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        Field::Id=> {
-                            if id.is_some() {
-                                return Err(de::Error::duplicate_field("id"));
-                            }
-                            id = Some(map.next_value()?);
-                        }
-                        Field::Timestamp=> {
-                            if timestamp.is_some() {
-                                return Err(de::Error::duplicate_field("timestamp"));
-                            }
-                            timestamp = Some(map.next_value()?);
-                        }
-                        Field::Sig=> {
-                            if sig.is_some() {
-                                return Err(de::Error::duplicate_field("sig"));
-                            }
-                            sig = Some(map.next_value()?);
-                        }
-                        Field::Tx_type=> {
-                            if tx_type.is_some() {
-                                return Err(de::Error::duplicate_field("tx_typ"));
-                            }
-                            tx_type = Some(map.next_value()?);
-                        }
-                        Field::Msg=> {
-                            if msg.is_some() {
-                                return Err(de::Error::duplicate_field("msg"));
-                            }
-                            msg = Some(map.next_value()?);
-                        }
-
-                    }
-                }
-                let id = id.ok_or_else(|| de::Error::missing_field("id"))?;
-                let timestamp = timestamp.ok_or_else(|| de::Error::missing_field("timestamp"))?;
-                let sig = sig.ok_or_else(|| de::Error::missing_field("sig"))?;
-                let tx_type = tx_type.ok_or_else(|| de::Error::missing_field("tx_type"))?;
-                let msg = msg.ok_or_else(|| de::Error::missing_field("msg"))?;
-                return Ok(Transaction{id, timestamp, sig, tx_type, to: Vec::new(), from: Vec::new(), msg});
-            }
-
-        }
-
-        const FIELDS: &'static [&'static str] = &["id", "timestamp", "sig", "tx_type", "to", "from", "msg"];
-        deserializer.deserialize_struct("Transaction", FIELDS, TransactionVisitor)
-    }
-}
-
 // finish Hashable for Transaction
 impl Hashable for Transaction {
     fn update_context(&self, context: &mut Context) {
@@ -575,14 +445,16 @@ impl Hashable for Transaction {
     }
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 pub struct Slip {
     address: PublicKey,
     amount: f32,
     block_id: u32,
     transaction_id: u32,
     id: u32,
-    block_hash: [u8; 32],
+
+    #[serde(with = "serde_bytes")]
+    block_hash: Vec<u8>,
     lc: u8,
 }
 
@@ -657,7 +529,7 @@ impl Wallet {
         for tx in transactions.iter() {
             for slip in tx.from.iter() {
                 if slip.address == self.publickey  {
-                    self.outputs.insert(slip.return_index(), *slip);
+                    self.outputs.insert(slip.return_index(), slip.clone());
                     if self.spends.contains_key(&slip.return_index())  {
                         self.spends.remove(&slip.return_index());
                     }
@@ -666,7 +538,7 @@ impl Wallet {
 
             for slip in tx.to.iter() {
                 if slip.address == self.publickey {
-                    self.inputs.insert(slip.return_index(), *slip);
+                    self.inputs.insert(slip.return_index(), slip.clone());
                 }
             }
         }
@@ -682,11 +554,16 @@ impl Wallet {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct Block {
     id: u32,
+
+    #[serde(with = "serde_bytes")]
     previous_hash: Vec<u8>,
+
+    #[serde(with = "serde_bytes")]
     merkle_root: Vec<u8>,
+
     timestamp: u128,
     creator: PublicKey,
     pub transactions: Vec<Transaction>,
@@ -904,11 +781,6 @@ impl Blockchain {
     pub fn return_last_slip_id(&self) -> u32 {
         return self.last_slip_id;
     }
-
-    // pub fn return_blocks(&self) -> RefCell<Vec<Block>> {
-    //     //return self.blocks.borrow_mut();
-    //     return self.blocks.borrow_mut();
-    // }
 
     pub fn return_blocks_length(&self) -> usize {
         return self.blocks.borrow_mut().len();
