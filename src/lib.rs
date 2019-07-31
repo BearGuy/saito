@@ -6,16 +6,16 @@ extern crate merkle;
 extern crate serde;
 
 use std::time::{SystemTime, UNIX_EPOCH};
-//use std::{thread, time};
 use std::cell::{RefCell, RefMut};
 use std::mem::transmute;
 use std::collections::HashMap;
 
-use serde::{Serialize, Deserialize};
-use serde::ser::{Serializer, SerializeStruct};
-//use serde::de::{self, Deserializer, Visitor, SeqAccess, MapAccess};
+use std::fs::{File, read_dir};
+use std::io::{BufWriter, Read};
+use std::io::prelude::*;
+use std::path::Path;
 
-//use std::fmt;
+use serde::{Serialize, Deserialize};
 
 use sha2::Sha256;
 use digest::Digest;
@@ -71,6 +71,19 @@ impl Miner {
             difficulty: 2.0,
             paysplit: 0.5,
         };
+    }
+
+    pub fn initialize(&mut self,
+                    mempool: &RefCell<Mempool>,
+                    blocks: &RefMut<Vec<Block>>,
+                    wallet: &Wallet,
+                    burnfee: &BurnFee) {
+        match blocks.last() {
+            Some(previous_block)=> {
+                self.start_mining(mempool, previous_block, wallet, burnfee);
+            }
+            None  => {}
+        }
     }
 
     pub fn start_mining(&mut self,
@@ -146,7 +159,23 @@ impl Miner {
             let node_share  = total_fees_for_miners_and_nodes - miner_share;
 
             println!("CREAINTG GOLDEN TX");
-            let mut golden_tx = Transaction::new(TransactionType::GoldenTicket);
+            //let mut golden_tx = Transaction::new(TransactionType::GoldenTicket);
+            let mut golden_tx = wallet.create_transaction(
+                wallet.publickey,
+                TransactionType::GoldenTicket,
+                0.001,
+                0.0
+            );
+
+            let mut golden_tx: Transaction = match wallet.create_transaction(
+                wallet.publickey,
+                TransactionType::GoldenTicket,
+                0.001,
+                0.0
+            ) {
+                Some(tx) => tx,
+                None => wallet.create_empty_golden_ticket(),
+            };
 
             golden_tx.add_to_slip(Slip {
                 address: wallet.publickey,
@@ -155,7 +184,6 @@ impl Miner {
                 transaction_id: 0,
                 id: 0,
                 block_hash: Vec::new(),
-                lc: 1
             });
 
             golden_tx.add_to_slip(Slip {
@@ -165,21 +193,9 @@ impl Miner {
                 transaction_id: 0,
                 id: 0,
                 block_hash: Vec::new(),
-                lc: 1
-            });
-
-            golden_tx.add_from_slip(Slip {
-                address: wallet.publickey,
-                amount: 0.0,
-                block_id: 0,
-                transaction_id: 0,
-                id: 0,
-                block_hash: Vec::new(),
-                lc: 1
             });
 
             // sign TX
-            println!("CREATING SIGNATURE");
             golden_tx.sig = wallet.create_signature(golden_tx.return_signature_source().as_slice());
 
             mempool.borrow_mut().add_transaction(golden_tx);
@@ -362,6 +378,47 @@ impl Transaction {
         };
     }
 
+    pub fn validate(&self) -> bool {
+        // we'll leave validation of Transaction inputs for the blockchain here
+        let mut total_to_amount: f32 = 0.0;
+        let mut total_from_amount: f32 = 0.0;
+
+        // we need min one sender and one receiver
+        if self.from.len() < 1 { 
+            return false; 
+        }
+
+        if self.to.len() < 1 { 
+            return false; 
+        }
+
+        // check for negative slips 
+        for slip in self.from.iter() { 
+            if slip.amount < 0.0 { 
+                return false; 
+            } 
+            total_from_amount += slip.amount;
+        }
+        for slip in self.to.iter() { 
+            if slip.amount < 0.0 { 
+                return false; 
+            } 
+            total_to_amount += slip.amount;
+        }
+
+        match self.tx_type {
+            TransactionType::GoldenTicket => {},
+            TransactionType::Fee => {},
+            _ => { 
+                if total_to_amount > total_from_amount { 
+                    return false; 
+                }
+            },
+        }
+
+        return true;
+    }
+
     fn add_to_slip(&mut self, slip: Slip) {
         self.to.push(slip);
     }
@@ -455,28 +512,38 @@ pub struct Slip {
 
     #[serde(with = "serde_bytes")]
     block_hash: Vec<u8>,
-    lc: u8,
 }
 
 impl Slip {
+    pub fn new(publickey: PublicKey) -> Slip {
+        return Slip {
+            address: publickey,
+            amount: 0.0,
+            block_id: 0,
+            transaction_id: 0,
+            id: 0,
+            block_hash: Vec::new(),
+        }
+    } 
+    
     pub fn return_index(&self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::new();
-        let address_bytes: Vec<u8> = self.address.serialize().into_iter().cloned().collect();
-        let amount_bytes: [u8; 4] = unsafe { transmute(self.amount as u32) };
-        let block_id_bytes : [u8; 4] = unsafe { transmute(self.block_id.to_be()) };
-        let transaction_id_bytes : [u8; 4] = unsafe { transmute(self.transaction_id.to_be()) };
-        let slip_id_bytes : [u8; 4] = unsafe { transmute(self.id.to_be()) };
+        //let mut bytes: Vec<u8> = Vec::new();
+        //let address_bytes: Vec<u8> = self.address.serialize().into_iter().cloned().collect();
+        //let amount_bytes: [u8; 4] = unsafe { transmute(self.amount as u32) };
+        //let block_id_bytes : [u8; 4] = unsafe { transmute(self.block_id.to_be()) };
+        //let transaction_id_bytes : [u8; 4] = unsafe { transmute(self.transaction_id.to_be()) };
+        //let slip_id_bytes : [u8; 4] = unsafe { transmute(self.id.to_be()) };
 
-        //bytes.extend(&address_bytes);
-        for elem in address_bytes.iter() { bytes.push(*elem); }
-        for elem in amount_bytes.iter() { bytes.push(*elem) }
-        for elem in block_id_bytes.iter() { bytes.push(*elem); }
-        for elem in transaction_id_bytes.iter() { bytes.push(*elem); }
-        for elem in slip_id_bytes.iter() { bytes.push(*elem); }
-        for elem in self.block_hash.iter() { bytes.push(*elem); }
-        bytes.push(self.lc);
+        ////bytes.extend(&address_bytes);
+        //for elem in address_bytes.iter() { bytes.push(*elem); }
+        //for elem in amount_bytes.iter() { bytes.push(*elem) }
+        //for elem in block_id_bytes.iter() { bytes.push(*elem); }
+        //for elem in transaction_id_bytes.iter() { bytes.push(*elem); }
+        //for elem in slip_id_bytes.iter() { bytes.push(*elem); }
+        //for elem in self.block_hash.iter() { bytes.push(*elem); }
 
-        return bytes;
+        //return bytes;
+        return bincode::serialize(self).unwrap();
     }
 }
 
@@ -552,9 +619,56 @@ impl Wallet {
 
         return balance;
     }
+
+    pub fn create_transaction(&self, publickey: PublicKey, tx_type: TransactionType, fee: f32, amt: f32) -> Option<Transaction> {
+       let total = fee + amt;
+       let from_slips = self.return_available_inputs(total);
+
+       match from_slips {
+           Some(slips) => {
+               let from_amt: f32 = slips.iter().map(|slip| slip.amount).sum();
+               let to_recover_amt = from_amt - total;
+
+               let mut to_slip = Slip::new(publickey);
+               to_slip.amount = to_recover_amt;
+
+               let mut tx = Transaction::new(tx_type);
+               for from_slip in slips.iter() {
+                   tx.add_from_slip(from_slip.clone());
+               }
+
+               tx.add_to_slip(to_slip);
+
+               return Some(tx);
+           },
+           None => { return None; },
+       }
+       
+
+    }
+
+    pub fn create_empty_golden_ticket(&self) -> Transaction {
+        let mut tx = Transaction::new(TransactionType::GoldenTicket);
+        tx.add_from_slip(Slip::new(self.publickey));
+        return tx
+    }
+
+    pub fn return_available_inputs(&self, amount: f32) -> Option<Vec<Slip>> {
+        let mut slip_vec: Vec<Slip> = Vec::new();
+        let mut slip_sum_amount: f32 = 0.0;
+
+        for slip in self.inputs.values() {
+            slip_sum_amount += slip.amount; 
+            slip_vec.push(slip.clone());
+            if slip_sum_amount > amount {
+                return Some(slip_vec);
+            }
+        }
+        return None;
+    }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Block {
     id: u32,
 
@@ -606,6 +720,10 @@ impl Block {
         return block_hash.to_vec()
     }
 
+    pub fn return_id(&self) -> u32 {
+        return self.id;
+    }
+
     pub fn return_timestamp(&self) -> u128 {
         return self.timestamp;
     }
@@ -635,19 +753,29 @@ impl Block {
                     println!("DOUBLE SPEND DETECTED");
                     return false;
                 }
+
+                let lower_block_limit: i64 = self.id as i64 - GENESIS_PERIOD as i64;
+                let block_id_64: i64 = slip.block_id as i64;
+                if block_id_64 < lower_block_limit && tx.tx_type == TransactionType::Base {
+                    if slip.amount > 0.0 {
+                        return false;
+                    }
+                    // remove from mempool
+                }
+            }
+            
+            // validate non-rebroadcast tx
+            match tx.tx_type {
+                TransactionType::Base => { if !tx.validate() { return false; } },
+                TransactionType::GoldenTicket => { if !tx.validate() { return false; } },
+                _ => {},
             }
 
-            // validate non-rebroadcast tx
-           // match tx.tx_type {
-           //     TransactionType::Base => { if !tx.validate() { return false; } },
-           //     TransactionType::GoldenTicket => { if !tx.validate() { return false } },
-           //     _ => {},
-           // }
         }
 
         // validate merkle root
-        // TODO:
-        //if self.merkle_root == return_merkle_root(self.transactions)
+        if self.merkle_root != create_merkle_root(self.transactions.clone()) { return false; }
+
         return true;
 
         // validate burn fee and fee transaction
@@ -686,13 +814,6 @@ impl Block {
         let mut min_tx_id: u32 = last_tx_id;
 
         for tx in transactions.iter_mut() {
-            for j in 0..tx.from.len() {
-                tx.from[j].id = last_slip_id;
-                tx.from[j].block_id = self.id;
-                tx.from[j].transaction_id = min_tx_id;
-                min_slip_id = min_slip_id + 1;
-            }
-
             for i in 0..tx.to.len() {
                 tx.to[i].id = min_slip_id;
                 min_slip_id = min_slip_id + 1;
@@ -703,6 +824,17 @@ impl Block {
 
             //println!("{:?}", tx);
             self.transactions.push(tx.clone());
+        }
+    }
+
+    pub fn update_slips(&mut self) {
+        let block_hash = self.return_block_hash(); 
+        for tx in self.transactions.iter_mut() {
+            for slip in tx.to.iter_mut() {
+                slip.block_hash = block_hash.clone();
+                slip.block_id = self.id;
+                slip.transaction_id = tx.id;
+            }
         }
     }
 
@@ -719,7 +851,17 @@ impl Block {
 //            }
 //        }
 //    }
-//
+
+    pub fn save(&self) {
+        let mut filename = "data/".to_string();
+        filename.push_str(&time_since_unix_epoch().to_string());
+        filename.push_str(&".sai".to_string());
+
+        let encode: Vec<u8> = bincode::serialize(self).unwrap();
+        let mut f = File::create(filename).unwrap();
+        f.write_all(&encode[..]);
+    }
+
     fn return_available_fees(&self, key: &PublicKey) -> f32 {
         let mut total_fees: f32 = 0.0;
 
@@ -744,7 +886,6 @@ impl Block {
     }
 }
 
-
 #[derive(Debug)]
 pub struct Blockchain {
     genesis_ts: u128,
@@ -752,6 +893,7 @@ pub struct Blockchain {
     last_tx_id: u32,
     last_slip_id: u32,
     pub blocks: RefCell<Vec<Block>>,
+    pub shashmap: HashMap<Vec<u8>, u32>,
 
 }
 
@@ -759,11 +901,131 @@ impl Blockchain {
     pub fn new () -> Blockchain {
         return Blockchain {
             genesis_ts: time_since_unix_epoch(),
-            blocks: RefCell::new(Vec::new()),
             last_block_id: 0,
             last_tx_id: 1,
-            last_slip_id: 1
+            last_slip_id: 1,
+            blocks: RefCell::new(Vec::new()),
+            shashmap: HashMap::new(), 
         };
+    }
+
+    pub fn initialize(&mut self, wallet: &mut Wallet) {
+        self.blocks = RefCell::new(self.load_blocks_from_disk());
+        
+        for block in self.blocks.borrow().iter() {
+            wallet.process_payment(block.transactions.clone());
+            //self.update_shashmap(block)
+        }
+
+        match self.blocks.borrow().last() {
+            Some(last_block) => {
+                self.last_block_id = last_block.return_id();
+                self.last_tx_id = last_block.return_tx_len() + self.return_last_tx_id();
+                self.last_slip_id = last_block.return_slip_len() + self.return_last_slip_id();
+            },
+            None => {},
+        }
+    }
+
+    fn load_blocks_from_disk(&mut self) -> Vec<Block> {
+        let mut blocks: Vec<Block> = Vec::new();
+        let dir = Path::new("data");
+        if dir.is_dir() {
+            for entry in read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+
+                println!("{:?}", path);
+
+                let mut encoded = Vec::<u8>::new();
+                let mut r = File::open(&path).unwrap();
+                r.read_to_end(&mut encoded).unwrap();
+
+                blocks.push(bincode::deserialize(&encoded[..]).unwrap());
+                println!("READ BLOCK INTO MEMORY -- {}", time_since_unix_epoch());
+            }
+        }
+        
+        blocks.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        return blocks;
+    }
+
+    pub fn add_block(&mut self, new_block: Block) {
+        self.save_block(new_block.clone());
+        self.blocks.borrow_mut().push(new_block);
+    }
+    
+    pub fn save_block(&mut self, block: Block) {
+        // update slips
+        //for tx in block.transactions.iter() {
+        //    for slip in tx.to.iter() {
+        //        self.insert_slip(slip.return_index(), block.id);
+        //    }
+        //}
+
+        self.write_block_to_disk(&block);
+        self.update_shashmap(&block);
+    }
+
+    pub fn update_shashmap(&mut self, block: &Block) {
+        for tx in block.transactions.iter() {
+            for slip in tx.to.iter() {
+                self.insert_slip(slip.return_index(), block.id);
+            }
+        }
+    }
+
+    fn write_block_to_disk(&self, block: &Block) {
+        let mut filename = "data/".to_string();
+        filename.push_str(&time_since_unix_epoch().to_string());
+        filename.push_str(&".sai".to_string());
+
+        let encode: Vec<u8> = bincode::serialize(block).unwrap();
+        let mut f = File::create(filename).unwrap();
+        f.write_all(&encode[..]);
+    }
+
+    pub fn validate_block(&self, new_block: &Block) -> bool {
+        if new_block.return_id() > 2 {
+            // validate inputs internally 
+            if !new_block.validate(self.blocks.borrow_mut().last().unwrap()) { 
+                println!("BLOCK FAILED TO VALIDATE");
+                return false; 
+            }
+
+            // validate the inputs
+            if !self.validate_transaction_inputs(&new_block) {
+                println!("TRANSACTION INPUTS INVALID");
+                return false;
+            }
+        } 
+        return true;
+    }
+
+    fn validate_transaction_inputs(&self, block: &Block) -> bool {
+        for tx in block.transactions.iter() {
+            for slip in tx.from.iter() {
+                if !self.validate_existing_slip(&slip.return_index(), &block.id) {
+                    return false;
+                };
+            }
+        }
+        return true;
+    }
+
+    // Shashmap functions
+    
+    fn insert_slip(&mut self, slip_index: Vec<u8>, current_block_id: u32) {
+        self.shashmap.insert(slip_index, current_block_id);
+    }
+
+    fn validate_existing_slip(&self, slip_index: &Vec<u8>, current_block_id: &u32) -> bool {
+        if !self.shashmap.contains_key(slip_index) { return false; }
+        let id = self.shashmap[slip_index];
+        if id == 0 { return false; }
+        if &id > current_block_id { return true; }
+        return true;
     }
 
     pub fn return_previous_hash(&self) -> Vec<u8> {
@@ -850,5 +1112,91 @@ impl BurnFee {
         let denominator = current_block_timestamp as u32 - self.last_block_timestamp as u32 + 1;
 
         self.fee = self.fee * (numerator / denominator as f32);
+    }
+}
+
+
+fn create_block() -> Block {
+    let (secret_key, public_key) = generate_keys();
+    let mut block = Block::new(Vec::new(), public_key);
+
+    // for x in 0..10 {
+        let mut tx = Transaction::new(TransactionType::Base);
+        tx.msg =  (0..1024000000).map(|_| { rand::random::<u8>() }).collect();
+        block.transactions.push(tx);
+    // }
+
+    return block;
+}
+
+fn write_blocks(blocks: &Vec<Block>) {
+    for block in blocks.iter() {
+        let mut filename = "data/".to_string();
+        filename.push_str(&time_since_unix_epoch().to_string());
+        filename.push_str(&".sai".to_string());
+
+        let mut f = BufWriter::new(File::create(filename).unwrap());
+//serialize_into(&mut f, block).unwrap();
+
+        //let encode: Vec<u8> = bincode::serialize(block).unwrap();
+        //let mut f = File::create(filename).unwrap();
+        //f.write_all(&encode[..]);
+    }
+}
+
+fn read_blocks() -> bool {
+    let dir = Path::new("data");
+    if dir.is_dir() {
+        for entry in read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+
+            let mut encoded = Vec::<u8>::new();
+            let mut r = File::open(&path).unwrap();
+            r.read_to_end(&mut encoded).unwrap();
+            let decoded: Block = bincode::deserialize(&encoded[..]).unwrap();
+            println!("READ BLOCK INTO MEMORY -- {}", time_since_unix_epoch());
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+fn serialize_and_deserialize(block: &Block) {
+    let encode: Vec<u8> = bincode::serialize(block).unwrap();
+    let filename = Path::new("blockdata.sai");
+    let mut f = File::create(filename).unwrap();
+    f.write_all(&encode[..]);
+    // let mut f = BufWriter::new(File::create(filename).unwrap());
+    // serialize_into(&mut f, block).unwrap();
+
+    let mut r = File::open(&filename).unwrap();
+    let mut encoded = Vec::<u8>::new();
+    r.read_to_end(&mut encoded).unwrap();
+
+    let decoded: Block = bincode::deserialize(&encoded[..]).unwrap();
+    // let mut r = BufReader::new(File::open(&filename).unwrap());
+    // let r = BufReader::new(&encoded[..]);
+    // let deserialized_block: Block = deserialize_from(&mut r).unwrap();
+    // assert_eq!(block, &decoded);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // #[test]
+    // fn then_test_deserialize() {
+    //     assert_eq!(true, read_blocks());
+    // }
+
+    #[test]
+    fn first_test_serialize() {
+        let mut blocks: Vec<Block> = Vec::new();
+
+        blocks.push(create_block());
+        write_blocks(&blocks);
+        assert_eq!(1, 1);
     }
 }

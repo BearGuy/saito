@@ -14,6 +14,11 @@ fn main() {
     let mut wallet = Wallet::new();
     let mut miner = Miner::new();
 
+    
+    // Initialize our blockchain state and start mining
+    blockchain.initialize(&mut wallet);
+    miner.initialize(&mempool, &blockchain.blocks.borrow_mut(), &wallet, &burnfee);
+
     let public_key_base_58 = wallet.return_base58();
     println!("YOUR PUBLICKEY: {}", public_key_base_58);
 
@@ -57,10 +62,20 @@ fn main() {
 
             println!("{:?}", block);
 
+            if !blockchain.validate_block(&block) { 
+                println!("BLOCK INVALID, SHUTTING DOWN");
+                return;
+            }
+
+            // update our slips
+            block.update_slips();
+
+            // process them into our wallet afterwards 
             wallet.process_payment(block.return_transactions());
             println!("CURRENT BALANCE: {}", wallet.return_balance());
 
-            blockchain.blocks.borrow_mut().push(block);
+            //block.save();
+            blockchain.add_block(block);
 
             // Possibly add these to block?
             blockchain.increment_block_id();
