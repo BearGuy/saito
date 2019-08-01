@@ -1120,11 +1120,11 @@ fn create_block() -> Block {
     let (secret_key, public_key) = generate_keys();
     let mut block = Block::new(Vec::new(), public_key);
 
-    // for x in 0..10 {
+     for x in 0..10 {
         let mut tx = Transaction::new(TransactionType::Base);
-        tx.msg =  (0..1024000000).map(|_| { rand::random::<u8>() }).collect();
+        tx.msg =  (0..1024000).map(|_| { rand::random::<u8>() }).collect();
         block.transactions.push(tx);
-    // }
+     }
 
     return block;
 }
@@ -1185,6 +1185,8 @@ fn serialize_and_deserialize(block: &Block) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
+    use std::sync::{Mutex, Arc};
 
     // #[test]
     // fn then_test_deserialize() {
@@ -1192,11 +1194,27 @@ mod tests {
     // }
 
     #[test]
-    fn first_test_serialize() {
-        let mut blocks: Vec<Block> = Vec::new();
+    fn saito_testing() {
+        //let mut blocks: Vec<Block> = Vec::new();
+        let mut block: Block = create_block();
+        let mut handles = vec![];
 
-        blocks.push(create_block());
-        write_blocks(&blocks);
+        let transactions = Arc::new(block.transactions);
+
+        for tx in transactions.iter() {
+            let tx = tx.clone(); 
+            let handle = thread::spawn(move || {
+                println!("{:?}", tx.return_signature_source());
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        //write_blocks(&blocks);
         assert_eq!(1, 1);
     }
 }

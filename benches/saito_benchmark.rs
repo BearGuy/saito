@@ -11,9 +11,17 @@ use std::io::{BufWriter, BufReader, Read};
 use std::io::prelude::*;
 use std::path::Path;
 
+// multi-threading
+use std::thread;
+use std::sync::{Mutex, Arc};
+use std::sync::mpsc::channel;
+use std::sync::mpsc::{Sender, Receiver};
+use rayon::prelude::*;
+
 use criterion::{Criterion, Benchmark};
 
 use secp256k1::{Secp256k1, SecretKey, PublicKey};
+use rand::Rng;
 use rand::thread_rng;
 
 use saito::{Block, Transaction, TransactionType};
@@ -30,17 +38,43 @@ fn generate_keys() -> (SecretKey, PublicKey) {
     return secp.generate_keypair(&mut thread_rng());
 }
 
-fn create_block() -> Block {
-    let (secret_key, public_key) = generate_keys();
+fn create_block(public_key: PublicKey) -> Block {
+    // let (secret_key, public_key) = generate_keys();
     let mut block = Block::new(Vec::new(), public_key);
+    //let mut rng = rand::thread_rng();
 
-    // for x in 0..10 {
+    for x in 0..100 {
         let mut tx = Transaction::new(TransactionType::Base);
-        tx.msg =  (0..1073741824).map(|_| { rand::random::<u8>() }).collect();
+        //tx.msg = (0..5073741).map(|_| { rng.gen(); }).collect();
+        tx.msg = (0..5073741).map(|_| { rand::random::<u8>() }).collect();
         block.transactions.push(tx);
-    // }
+    }
 
     return block;
+}
+
+fn create_block_multi(public_key: PublicKey) -> Block {
+    let mut block = Block::new(Vec::new(), public_key);
+
+    let (sender, receiver) = channel();
+
+    (0..1000000).into_par_iter().for_each_with(sender, |s, x| create_transaction_multi(s.clone()));
+    block.transactions = receiver.iter().collect();
+    return block;
+}
+
+
+fn create_transaction_multi(sender: Sender<Transaction>) {
+    let mut tx = Transaction::new(TransactionType::Base);
+    // let mut rng = thread_rng();
+    //tx.msg = (0..5073741).map(|_| { rand::random::<u8>() }).collect();
+    tx.msg = (0..5073)
+        .into_par_iter()
+        .map_init(
+            || rand::thread_rng(),
+            |rng, x| rng.gen()
+        ).collect();
+    sender.send(tx).unwrap();
 }
 
 fn write_blocks(blocks: &Vec<Block>) {
@@ -116,23 +150,36 @@ fn serialize_in_memory(block: &Block) {
 
 fn create_block_benchmark(c: &mut Criterion) {
     //c.bench_function("serialize blocks and write to disk", move |b| b.iter(|| write_blocks(&blocks)));
-
+    let (secret_key, public_key) = generate_keys();
     c.bench(
         "create block data in memory",
         Benchmark::new(
             "encode",
-            move |b| b.iter(|| create_block()),
+            move |b| b.iter(|| create_block(public_key)),
         )
         .sample_size(2)
     );
 }
 
+fn create_block_multi_thread_benchmark(c: &mut Criterion) {
+    let (secret_key, public_key) = generate_keys();
+    c.bench(
+        "multi thread block",
+        Benchmark::new(
+            "multi thread transaction",
+            move |b| b.iter(|| create_block_multi(public_key))
+        )
+        .sample_size(2)
+    );
+}
+
+
 fn serialize_blocks_benchmark(c: &mut Criterion) {
-    // let (secret_key, public_key) = generate_keys();
+    let (secret_key, public_key) = generate_keys();
     let mut blocks: Vec<Block> = Vec::new();
 
     // for x in 0..100 {
-    blocks.push(create_block());
+    blocks.push(create_block(public_key));
     // }
 
     c.bench(
@@ -169,7 +216,8 @@ fn deserialize_block_from_disk_benchmark(c: &mut Criterion) {
 }
 
 fn serialize_in_memory_benchmark(c: &mut Criterion) {
-    let block = create_block();
+    let (secret_key, public_key) = generate_keys();
+    let block = create_block(public_key);
     c.bench(
         "serialize a block in memory",
         Benchmark::new(
@@ -181,7 +229,8 @@ fn serialize_in_memory_benchmark(c: &mut Criterion) {
 }
 
 fn serialize_deserialize_in_memory_benchmark(c: &mut Criterion) {
-    let block = create_block();
+    let (secret_key, public_key) = generate_keys();
+    let block = create_block(public_key);
     c.bench(
         "serialize and deserialize block in memory",
         Benchmark::new(
@@ -193,7 +242,8 @@ fn serialize_deserialize_in_memory_benchmark(c: &mut Criterion) {
 }
 
 fn serialize_deserialize_to_file_benchmark(c: &mut Criterion) {
-    let block = create_block();
+    let (secret_key, public_key) = generate_keys();
+    let block = create_block(public_key);
     c.bench(
         "serialize and deserialize block from disk",
         Benchmark::new(
@@ -206,6 +256,7 @@ fn serialize_deserialize_to_file_benchmark(c: &mut Criterion) {
 
 // criterion_group!(benches, deserialize_blocks_benchmark);
 //criterion_group!(benches, create_block_benchmark, serialize_blocks_benchmark, deserialize_blocks_benchmark, serialize_deserialize_to_file_benchmark);
-criterion_group!(benches, deserialize_block_from_disk_benchmark);
+//criterion_group!(benches, multi_thread_transactions_benchmark);
+criterion_group!(benches, create_block_multi_thread_benchmark);
 criterion_main!(benches);
 
