@@ -47,7 +47,7 @@ fn create_block(public_key: PublicKey) -> Block {
         let mut tx = Transaction::new(TransactionType::Base);
         //tx.msg = (0..5073741).map(|_| { rng.gen(); }).collect();
         tx.msg = (0..5073741).map(|_| { rand::random::<u8>() }).collect();
-        block.transactions.borrow_mut().push(tx);
+        block.transactions.push(tx);
     }
 
     return block;
@@ -59,7 +59,7 @@ fn create_block_multi(public_key: PublicKey) -> Block {
     let (sender, receiver) = channel();
 
     (0..1000000).into_par_iter().for_each_with(sender, |s, x| create_transaction_multi(s.clone()));
-    block.transactions.replace(receiver.iter().collect());
+    block.transactions = receiver.iter().collect();
     return block;
 }
 
