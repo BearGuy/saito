@@ -66,8 +66,6 @@ fn create_block_multi(public_key: PublicKey) -> Block {
 
 fn create_transaction_multi(sender: Sender<Transaction>) {
     let mut tx = Transaction::new(TransactionType::Base);
-    // let mut rng = thread_rng();
-    //tx.msg = (0..5073741).map(|_| { rand::random::<u8>() }).collect();
     tx.msg = (0..5073)
         .into_par_iter()
         .map_init(
@@ -149,10 +147,8 @@ fn serialize_in_memory(block: &Block) {
 }
 
 fn generate_mhash(block: &Block) {
-    block.transactions
-        .clone()
-        .into_par_iter()
-        .map(|tx| tx.return_message_hash());
+    let txs = block.transactions.clone();
+    txs.into_par_iter().map(|tx| tx.return_message_hash());
 }
 
 //
