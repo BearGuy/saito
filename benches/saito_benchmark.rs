@@ -47,7 +47,7 @@ fn create_block(public_key: PublicKey) -> Block {
         let mut tx = Transaction::new(TransactionType::Base);
         //tx.msg = (0..5073741).map(|_| { rng.gen(); }).collect();
         tx.msg = (0..5073741).map(|_| { rand::random::<u8>() }).collect();
-        block.transactions.push(tx);
+        block.transactions.borrow_mut().push(tx);
     }
 
     return block;
@@ -59,7 +59,7 @@ fn create_block_multi(public_key: PublicKey) -> Block {
     let (sender, receiver) = channel();
 
     (0..1000000).into_par_iter().for_each_with(sender, |s, x| create_transaction_multi(s.clone()));
-    block.transactions = receiver.iter().collect();
+    block.transactions.replace(receiver.iter().collect());
     return block;
 }
 
@@ -147,6 +147,18 @@ fn serialize_and_deserialize_in_memory(block: &Block) {
 fn serialize_in_memory(block: &Block) {
     let encoded: Vec<u8> = bincode::serialize(block).unwrap();
 }
+
+fn generate_mhash(block: &Block) {
+    block.transactions
+        .borrow()
+        .clone()
+        .into_par_iter()
+        .map(|tx| tx.return_message_hash());
+}
+
+//
+// Benchmarks
+//
 
 fn create_block_benchmark(c: &mut Criterion) {
     //c.bench_function("serialize blocks and write to disk", move |b| b.iter(|| write_blocks(&blocks)));
@@ -254,9 +266,23 @@ fn serialize_deserialize_to_file_benchmark(c: &mut Criterion) {
     );
 }
 
+fn generate_mhash_benchmark(c: &mut Criterion) {
+    let (secret_key, public_key) = generate_keys();
+    let block = create_block_multi(public_key);
+    c.bench(
+        "generate mhashes for all tx in block",
+        Benchmark::new(
+            "hash",
+            move |b| b.iter(|| generate_mhash(&block))
+        )
+        .sample_size(2)
+    );
+}
+
 // criterion_group!(benches, deserialize_blocks_benchmark);
 //criterion_group!(benches, create_block_benchmark, serialize_blocks_benchmark, deserialize_blocks_benchmark, serialize_deserialize_to_file_benchmark);
 //criterion_group!(benches, multi_thread_transactions_benchmark);
-criterion_group!(benches, create_block_multi_thread_benchmark);
+// criterion_group!(benches, create_block_multi_thread_benchmark);
+criterion_group!(benches, generate_mhash_benchmark);
 criterion_main!(benches);
 
