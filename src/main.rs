@@ -71,7 +71,7 @@ fn main() {
             block.update_slips();
 
             // process them into our wallet afterwards 
-            wallet.process_payment(block.transactions.borrow());
+            wallet.process_payment(&block.transactions);
             println!("CURRENT BALANCE: {}", wallet.return_balance());
 
             //block.save();

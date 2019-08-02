@@ -150,7 +150,6 @@ fn serialize_in_memory(block: &Block) {
 
 fn generate_mhash(block: &Block) {
     block.transactions
-        .borrow()
         .clone()
         .into_par_iter()
         .map(|tx| tx.return_message_hash());

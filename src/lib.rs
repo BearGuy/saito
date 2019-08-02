@@ -6,7 +6,7 @@ extern crate merkle;
 extern crate serde;
 
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{RefCell, RefMut};
 use std::mem::transmute;
 use std::collections::HashMap;
 
@@ -47,7 +47,7 @@ fn generate_keys() -> (SecretKey, PublicKey) {
 }
 
 // need to implement Hashable trait for Transaction
-pub fn create_merkle_root(transactions: Ref<Vec<Transaction>>) -> Vec<u8> {
+pub fn create_merkle_root(transactions: &Vec<Transaction>) -> Vec<u8> {
     let merkle = MerkleTree::from_vec(&SHA256, transactions.clone());
     let merkle_root: Vec<u8> = merkle.root_hash().clone();
     return merkle_root;
@@ -235,7 +235,7 @@ impl Miner {
        // let max_hash = 0xFFFFFFFF;
 
        let winning_address: PublicKey;
-       if previous_block.transactions.borrow().len() == 0 { return previous_block.creator; }
+       if previous_block.transactions.len() == 0 { return previous_block.creator; }
 
        //let random_slice = random_solution;
 
@@ -262,7 +262,7 @@ impl Miner {
     fn find_winning_transaction(&self, previous_block: &Block) -> Option<Transaction> {
         let mut winning_tx = Transaction::new(TransactionType::Base);
         let mut winning_amt = 0.0;
-        for tx in previous_block.transactions.borrow().iter() {
+        for tx in previous_block.transactions.iter() {
             let current_amt = tx.calculate_from_amount();
             if winning_amt < current_amt {
                winning_tx = tx.clone();
@@ -606,7 +606,7 @@ impl Wallet {
         self.outputs.insert(output.return_index(), output);
     }
 
-    pub fn process_payment(&mut self, transactions: Ref<Vec<Transaction>>) {
+    pub fn process_payment(&mut self, transactions: &Vec<Transaction>) {
         for tx in transactions.iter() {
             for slip in tx.from.iter() {
                 if slip.address == self.publickey  {
@@ -696,7 +696,7 @@ pub struct Block {
     creator: PublicKey,
     
     // pub transactions: Vec<Transaction>,    
-    pub transactions: RefCell<Vec<Transaction>>,
+    pub transactions: Vec<Transaction>,
     difficulty: f32,
     paysplit: f32,
     treasury: f32,
@@ -712,7 +712,7 @@ impl Block {
             previous_hash,
             merkle_root: Vec::new(),
             creator: publickey,
-            transactions: RefCell::new(Vec::new()),
+            transactions: Vec::new(),
             difficulty: 0.0,
             paysplit: 0.5,
             treasury: 2868100000.0,
@@ -750,7 +750,7 @@ impl Block {
     //}
 
     pub fn set_merkle_root(&mut self) {
-        self.merkle_root = create_merkle_root(self.transactions.borrow());
+        self.merkle_root = create_merkle_root(&self.transactions);
     }
 
     fn validate(&self, previous_block: &Block) -> bool {
@@ -762,7 +762,7 @@ impl Block {
 
         // ensure no duplicate input slips
         let mut tx_input_hashmap: HashMap<Vec<u8>, u8> = HashMap::new();
-        for tx in self.transactions.borrow().iter() {
+        for tx in self.transactions.iter() {
             for slip in tx.from.iter() {
                 if !tx_input_hashmap.contains_key(&slip.return_index()) {
                     tx_input_hashmap.insert(slip.return_index(), 0);
@@ -791,7 +791,7 @@ impl Block {
         }
 
         // validate merkle root
-        if self.merkle_root != create_merkle_root(self.transactions.borrow()) { return false; }
+        if self.merkle_root != create_merkle_root(&self.transactions) { return false; }
 
         return true;
 
@@ -840,13 +840,13 @@ impl Block {
             min_tx_id = min_tx_id + 1;
 
             //println!("{:?}", tx);
-            self.transactions.borrow_mut().push(tx.clone());
+            self.transactions.push(tx.clone());
         }
     }
 
     pub fn update_slips(&mut self) {
         let block_hash = self.return_block_hash(); 
-        for tx in self.transactions.borrow_mut().iter_mut() {
+        for tx in self.transactions.iter_mut() {
             for slip in tx.to.iter_mut() {
                 slip.block_hash = block_hash.clone();
                 slip.block_id = self.id;
@@ -882,7 +882,7 @@ impl Block {
     fn return_available_fees(&self, key: &PublicKey) -> f32 {
         let mut total_fees: f32 = 0.0;
 
-        for tx in self.transactions.borrow().iter() {
+        for tx in self.transactions.iter() {
             total_fees += tx.return_fees_usable(key);
         }
 
@@ -891,7 +891,7 @@ impl Block {
 
     pub fn return_slip_len(&self) -> u32 {
         let mut slip_number: u32 = 0;
-        for tx in self.transactions.borrow().iter() {
+        for tx in self.transactions.iter() {
             slip_number += tx.to.len() as u32;
             slip_number += tx.from.len()as u32;
         }
@@ -899,7 +899,7 @@ impl Block {
     }
 
     pub fn return_tx_len(&self) -> u32{
-        return self.transactions.borrow().len() as u32;
+        return self.transactions.len() as u32;
     }
 }
 
@@ -930,7 +930,7 @@ impl Blockchain {
         self.blocks = RefCell::new(self.load_blocks_from_disk());
         
         for block in self.blocks.borrow().iter() {
-            wallet.process_payment(block.transactions.borrow());
+            wallet.process_payment(&block.transactions);
             //self.update_shashmap(block)
         }
 
@@ -986,7 +986,7 @@ impl Blockchain {
     }
 
     pub fn update_shashmap(&mut self, block: &Block) {
-        for tx in block.transactions.borrow().iter() {
+        for tx in block.transactions.iter() {
             for slip in tx.to.iter() {
                 self.insert_slip(slip.return_index(), block.id);
             }
@@ -1021,7 +1021,7 @@ impl Blockchain {
     }
 
     fn validate_transaction_inputs(&self, block: &Block) -> bool {
-        for tx in block.transactions.borrow().iter() {
+        for tx in block.transactions.iter() {
             for slip in tx.from.iter() {
                 if !self.validate_existing_slip(&slip.return_index(), &block.id) {
                     return false;
@@ -1140,7 +1140,7 @@ fn create_block() -> Block {
      for x in 0..10 {
         let mut tx = Transaction::new(TransactionType::Base);
         tx.msg =  (0..1024000).map(|_| { rand::random::<u8>() }).collect();
-        block.transactions.borrow_mut().push(tx);
+        block.transactions.push(tx);
      }
 
     return block;
