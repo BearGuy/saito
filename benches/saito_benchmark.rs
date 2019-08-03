@@ -75,17 +75,14 @@ fn create_transaction_multi(sender: Sender<Transaction>) {
     sender.send(tx).unwrap();
 }
 
-fn generate_mhash(block: &Block) {
-    let (sender, receiver) = channel();
-    block.transactions.clone().into_par_iter().for_each_with(sender, |s, tx| {
-        send_hash_through_channel(s.clone(), tx.clone());
-    });
-    let mhashes: Vec<Vec<u8>> = receiver.iter().collect();
-}
-
-fn send_hash_through_channel(sender: Sender<Vec<u8>>, tx: Transaction) {
-    let mhash = tx.return_message_hash();
-    sender.send(mhash).unwrap();
+fn generate_mhash(block: &Block) -> Vec<u8>{
+    let txs = Arc::new(&block.transactions);
+    let hash_array: Vec<u8> = txs.clone()
+         .into_par_iter()
+         .map(|tx| tx.return_message_hash())
+         .flatten()
+         .collect();
+    return hash_array 
 }
 
 fn write_blocks(blocks: &Vec<Block>) {
